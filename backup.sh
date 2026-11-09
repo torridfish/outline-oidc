@@ -11,5 +11,5 @@ mkdir -p "$DIR"
 docker compose exec -T postgres pg_dump -U outline outline | gzip > "$DIR/outline_db.sql.gz"
 docker compose exec -T outline tar -C /var/lib/outline/data -cf - . | gzip > "$DIR/outline_files.tar.gz"
 
-find backup -mindepth 1 -maxdepth 1 -type d -mtime +"$KEEP_DAYS" -exec rm -rf {} +
+find backup -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9]*' -mtime +"$KEEP_DAYS" -exec rm -rf {} +
 echo "Backup written to $DIR"

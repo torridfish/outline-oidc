@@ -105,7 +105,7 @@ Login attempts are logged by the proxy as `ALLOWED (...)` or `DENIED (...)` with
 ./backup.sh
 ```
 
-This writes `backup/<timestamp>/outline_db.sql.gz` (every document) and `outline_files.tar.gz` (uploads), and deletes backups older than `BACKUP_KEEP_DAYS` (default 14). It never touches git. Copy `backup/` off the machine yourself, for example to a **private** repo or object storage. Run it from cron if you want it daily:
+This writes `backup/<timestamp>/outline_db.sql.gz` (every document) and `outline_files.tar.gz` (uploads), and deletes backups older than `BACKUP_KEEP_DAYS` (default 14). It never touches git and deletes only its own timestamped folders, so `backup/` can safely be a clone of a private repo. Copy `backup/` off the machine yourself, for example to a **private** repo or object storage. Run it from cron if you want it daily:
 
 ```
 0 3 * * * /path/to/outline-oidc/backup.sh >> /path/to/outline-oidc/backup.log 2>&1

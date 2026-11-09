@@ -1,0 +1,4 @@
+# One email per line, lowercase; lines starting with # are ignored.
+# GitHub login: the account's PRIMARY VERIFIED email. Google login: the Google account email.
+# Edits take effect immediately; no restart needed.
+# alice@example.com

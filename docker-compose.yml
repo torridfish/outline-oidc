@@ -1,0 +1,80 @@
+name: outline-oidc
+
+services:
+  outline:
+    image: docker.getoutline.com/outlinewiki/outline:1.12.0
+    env_file: .env
+    volumes:
+      - storage-data:/var/lib/outline/data
+      - ./entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/entrypoint.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      oidc-proxy:
+        condition: service_started
+    restart: unless-stopped
+
+  # Only gets the variables it needs, so it never sees the database password or Outline's secrets.
+  oidc-proxy:
+    build: ./oidc-proxy
+    environment:
+      ISSUER: http://oidc-proxy:9000
+      EXTERNAL_BASE: https://${DOMAIN:?set DOMAIN in .env}/oidc-proxy
+      OUTLINE_CALLBACK: https://${DOMAIN}/auth/oidc.callback
+      ALLOWED_EMAILS_PATH: /data/allowed-emails.txt
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID in .env}
+      OIDC_PROXY_SIGNING_KEY: ${OIDC_PROXY_SIGNING_KEY:-}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      SITE_NAME: ${SITE_NAME:-Outline}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # Mount the folder, not the file: editors replace files, and a single-file bind mount keeps pointing at the old one.
+      - ./allowlist:/data:ro
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run ${TUNNEL_NAME:-outline}
+    volumes:
+      - ./.cloudflared:/home/nonroot/.cloudflared
+    depends_on:
+      - outline
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 30s
+      retries: 3
+    volumes:
+      - redis-data:/data
+
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: outline
+      POSTGRES_DB: outline
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "outline", "-U", "outline"]
+      start_period: 5s
+      interval: 5s
+      timeout: 20s
+      retries: 3
+    volumes:
+      - database-data:/var/lib/postgresql/data
+
+volumes:
+  storage-data:
+  database-data:
+  redis-data:

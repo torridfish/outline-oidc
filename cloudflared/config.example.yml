@@ -1,0 +1,12 @@
+# Copy to .cloudflared/config.yml after creating the tunnel, then fill in both placeholders.
+# Only /oidc-proxy/* goes to the proxy; its /token and /userinfo stay internal.
+tunnel: <TUNNEL_ID>
+credentials-file: /home/nonroot/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: <DOMAIN>
+    path: ^/oidc-proxy
+    service: http://oidc-proxy:9000
+  - hostname: <DOMAIN>
+    service: http://outline:3000
+  - service: http_status:404

@@ -1,0 +1,6 @@
+.env
+.cloudflared/
+backup/
+allowlist/allowed-emails.txt
+node_modules/
+*.log

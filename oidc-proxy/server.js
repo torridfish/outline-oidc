@@ -6,8 +6,22 @@ const { SignJWT, jwtVerify, exportJWK, generateKeyPair, importPKCS8 } = require(
 const ACCESS_TOKEN_TTL = "1h";
 const REFRESH_TOKEN_TTL = "90d";
 const ACCESS_TOKEN_EXPIRES_IN = 3600;
+// Limits for the unauthenticated login endpoints, so a flood of requests cannot exhaust memory.
+const MAX_PARAM_LENGTH = 512;
+const MAX_PENDING_ENTRIES = 1000;
 
 const app = express();
+app.disable("x-powered-by");
+// The proxy pages share an origin with Outline, so they must not be framed or content-sniffed.
+app.use((_req, res, next) => {
+  res.set({
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+  });
+  next();
+});
 app.use((req, res, next) => {
   if (LOG_LEVEL === "debug") console.log(`[REQ] ${req.method} ${req.url}`);
   next();
@@ -30,6 +44,23 @@ const SITE_NAME = process.env.SITE_NAME || "Outline";
 
 const escapeHtml = (str) =>
   String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Stores a value that expires after ttlMs. Returns false when the map is full.
+function storeTemporarily(map, key, value, ttlMs) {
+  if (map.size >= MAX_PENDING_ENTRIES) return false;
+  map.set(key, value);
+  setTimeout(() => map.delete(key), ttlMs).unref();
+  return true;
+}
+
+// Accepts only a short string query parameter; anything else (missing, array, object, too long) is rejected.
+function shortParam(value) {
+  if (value === undefined) return "";
+  if (typeof value !== "string" || value.length > MAX_PARAM_LENGTH) return null;
+  return value;
+}
+
+const sendText = (res, status, message) => res.status(status).type("text/plain").send(message);
 
 // Fail fast on a broken configuration instead of failing at the first login.
 const missing = [
@@ -217,12 +248,17 @@ app.get("/jwks", (_req, res) => {
 // --- Authorization endpoint: show login choice page ---
 app.get("/oidc-proxy/authorize", (req, res) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
-  const outlineState = req.query.state || "";
-  const nonce = req.query.nonce || "";
+  const outlineState = shortParam(req.query.state);
+  const nonce = shortParam(req.query.nonce);
+  if (outlineState === null || nonce === null) {
+    return sendText(res, 400, "Invalid request");
+  }
 
   const sessionKey = crypto.randomBytes(16).toString("hex");
-  sessions.set(sessionKey, { outlineState, nonce });
-  setTimeout(() => sessions.delete(sessionKey), 10 * 60 * 1000);
+  if (!storeTemporarily(sessions, sessionKey, { outlineState, nonce }, 10 * 60 * 1000)) {
+    console.warn("Too many pending logins; rejecting a new one");
+    return sendText(res, 503, "Too many sign-in attempts in progress. Please try again in a few minutes.");
+  }
   debug(`[Authorize] Session created. key=${sessionKey}, sessions.size=${sessions.size}`);
 
   res.send(renderChoicePage(sessionKey));
@@ -230,17 +266,19 @@ app.get("/oidc-proxy/authorize", (req, res) => {
 
 // --- Start Google flow ---
 app.get("/oidc-proxy/start/google", (req, res) => {
-  const session = sessions.get(req.query.key);
+  const session = typeof req.query.key === "string" ? sessions.get(req.query.key) : undefined;
   if (!session) {
     debug(`[Google] Session not found. key=${req.query.key}, sessions.size=${sessions.size}, keys=[${[...sessions.keys()].join(",")}]`);
-    return res.status(400).send("Invalid or expired session. Please go back and try again.");
+    return sendText(res, 400, "Invalid or expired session. Please go back and try again.");
   }
   debug(`[Google] Session found. key=${req.query.key}`);
   sessions.delete(req.query.key);
 
   const proxyState = crypto.randomBytes(16).toString("hex");
-  pending.set(proxyState, { outlineState: session.outlineState, nonce: session.nonce });
-  setTimeout(() => pending.delete(proxyState), 10 * 60 * 1000);
+  if (!storeTemporarily(pending, proxyState, { outlineState: session.outlineState, nonce: session.nonce }, 10 * 60 * 1000)) {
+    console.warn("Too many pending logins; rejecting a new one");
+    return sendText(res, 503, "Too many sign-in attempts in progress. Please try again in a few minutes.");
+  }
 
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
@@ -256,17 +294,19 @@ app.get("/oidc-proxy/start/google", (req, res) => {
 
 // --- Start GitHub flow ---
 app.get("/oidc-proxy/start/github", (req, res) => {
-  const session = sessions.get(req.query.key);
+  const session = typeof req.query.key === "string" ? sessions.get(req.query.key) : undefined;
   if (!session) {
     debug(`[GitHub] Session not found. key=${req.query.key}, sessions.size=${sessions.size}, keys=[${[...sessions.keys()].join(",")}]`);
-    return res.status(400).send("Invalid or expired session. Please go back and try again.");
+    return sendText(res, 400, "Invalid or expired session. Please go back and try again.");
   }
   debug(`[GitHub] Session found. key=${req.query.key}`);
   sessions.delete(req.query.key);
 
   const proxyState = crypto.randomBytes(16).toString("hex");
-  pending.set(proxyState, { outlineState: session.outlineState, nonce: session.nonce });
-  setTimeout(() => pending.delete(proxyState), 10 * 60 * 1000);
+  if (!storeTemporarily(pending, proxyState, { outlineState: session.outlineState, nonce: session.nonce }, 10 * 60 * 1000)) {
+    console.warn("Too many pending logins; rejecting a new one");
+    return sendText(res, 503, "Too many sign-in attempts in progress. Please try again in a few minutes.");
+  }
 
   const params = new URLSearchParams({
     client_id: GITHUB_OAUTH_CLIENT_ID,
@@ -282,11 +322,14 @@ app.get("/oidc-proxy/start/github", (req, res) => {
 app.get("/oidc-proxy/callback", async (req, res) => {
   const { code, state: proxyState } = req.query;
 
-  const flow = pending.get(proxyState);
+  const flow = typeof proxyState === "string" ? pending.get(proxyState) : undefined;
   if (!flow) {
-    return res.status(400).send("Invalid or expired state");
+    return sendText(res, 400, "Invalid or expired state");
   }
   pending.delete(proxyState);
+  if (typeof code !== "string" || !code) {
+    return sendText(res, 400, "Missing authorization code");
+  }
 
   try {
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
@@ -303,21 +346,23 @@ app.get("/oidc-proxy/callback", async (req, res) => {
 
     const tokens = await tokenRes.json();
     if (tokens.error) {
-      return res.status(400).send(`Google token error: ${tokens.error_description || tokens.error}`);
+      return sendText(res, 400, `Google token error: ${tokens.error_description || tokens.error}`);
     }
 
     const userinfoRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
     const userinfo = await userinfoRes.json();
-    const email = (userinfo.email || "").toLowerCase();
+    if (userinfo.email_verified !== true) {
+      console.log(`DENIED (Google): ${userinfo.email} is not verified`);
+      return sendText(res, 403, "Access denied: your Google email address is not verified.");
+    }
+    const email = String(userinfo.email || "").toLowerCase();
 
     const allowed = loadAllowedEmails();
     if (!allowed.has(email)) {
       console.log(`DENIED (Google): ${email} not in allowlist`);
-      return res.status(403).send(
-        `Access denied: ${email} is not in the allowed list. Please contact admin.`
-      );
+      return sendText(res, 403, `Access denied: ${email} is not in the allowed list. Please contact admin.`);
     }
 
     console.log(`ALLOWED (Google): ${email}`);
@@ -339,7 +384,7 @@ app.get("/oidc-proxy/callback", async (req, res) => {
     res.redirect(`${OUTLINE_CALLBACK}?${params}`);
   } catch (err) {
     console.error("Google callback error:", err);
-    res.status(500).send("Authentication failed");
+    sendText(res, 500, "Authentication failed");
   }
 });
 
@@ -347,11 +392,14 @@ app.get("/oidc-proxy/callback", async (req, res) => {
 app.get("/oidc-proxy/github/callback", async (req, res) => {
   const { code, state: proxyState } = req.query;
 
-  const flow = pending.get(proxyState);
+  const flow = typeof proxyState === "string" ? pending.get(proxyState) : undefined;
   if (!flow) {
-    return res.status(400).send("Invalid or expired state");
+    return sendText(res, 400, "Invalid or expired state");
   }
   pending.delete(proxyState);
+  if (typeof code !== "string" || !code) {
+    return sendText(res, 400, "Missing authorization code");
+  }
 
   try {
     const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
@@ -370,7 +418,7 @@ app.get("/oidc-proxy/github/callback", async (req, res) => {
 
     const tokens = await tokenRes.json();
     if (tokens.error) {
-      return res.status(400).send(`GitHub token error: ${tokens.error_description || tokens.error}`);
+      return sendText(res, 400, `GitHub token error: ${tokens.error_description || tokens.error}`);
     }
 
     const [userinfoRes, emailsRes] = await Promise.all([
@@ -391,15 +439,11 @@ app.get("/oidc-proxy/github/callback", async (req, res) => {
     const userinfo = await userinfoRes.json();
     const emails = await emailsRes.json();
 
-    // Prefer primary verified email
-    const primaryEmail =
-      (Array.isArray(emails) && emails.find((e) => e.primary && e.verified)?.email) ||
-      userinfo.email;
+    // Only the primary verified email counts; the public profile email is not proof of ownership.
+    const primaryEmail = Array.isArray(emails) && emails.find((e) => e.primary && e.verified)?.email;
 
     if (!primaryEmail) {
-      return res
-        .status(400)
-        .send("Could not retrieve your email from GitHub. Please make sure your GitHub email is verified and visible.");
+      return sendText(res, 400, "Could not retrieve a primary verified email from GitHub. Please verify your primary GitHub email.");
     }
 
     const email = primaryEmail.toLowerCase();
@@ -407,9 +451,7 @@ app.get("/oidc-proxy/github/callback", async (req, res) => {
     const allowed = loadAllowedEmails();
     if (!allowed.has(email)) {
       console.log(`DENIED (GitHub): ${email} not in allowlist`);
-      return res.status(403).send(
-        `Access denied: ${email} is not in the allowed list. Please contact admin.`
-      );
+      return sendText(res, 403, `Access denied: ${email} is not in the allowed list. Please contact admin.`);
     }
 
     console.log(`ALLOWED (GitHub): ${email}`);
@@ -431,7 +473,7 @@ app.get("/oidc-proxy/github/callback", async (req, res) => {
     res.redirect(`${OUTLINE_CALLBACK}?${params}`);
   } catch (err) {
     console.error("GitHub callback error:", err);
-    res.status(500).send("Authentication failed");
+    sendText(res, 500, "Authentication failed");
   }
 });
 

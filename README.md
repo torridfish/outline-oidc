@@ -52,7 +52,7 @@ Fill in at least one pair in `.env`. A provider with an empty client ID is hidde
 You need a browser once, for `tunnel login`.
 
 ```bash
-cf() { docker run --rm -v "$PWD/.cloudflared":/home/nonroot/.cloudflared cloudflare/cloudflared:latest "$@"; }
+cf() { docker run --rm -v "$PWD/.cloudflared":/home/nonroot/.cloudflared cloudflare/cloudflared:2026.11.0 "$@"; }
 cf tunnel login
 cf tunnel create outline                                  # prints the Tunnel ID
 cf tunnel route dns outline docs.example.com

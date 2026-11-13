@@ -16,6 +16,7 @@ services:
       oidc-proxy:
         condition: service_started
     restart: unless-stopped
+    mem_limit: 1536m
 
   # Only gets the variables it needs, so it never sees the database password or Outline's secrets.
   oidc-proxy:
@@ -37,6 +38,7 @@ services:
       # Mount the folder, not the file: editors replace files, and a single-file bind mount keeps pointing at the old one.
       - ./allowlist:/data:ro
     restart: unless-stopped
+    mem_limit: 256m
 
   cloudflared:
     image: cloudflare/cloudflared:2026.11.0
@@ -46,10 +48,12 @@ services:
     depends_on:
       - outline
     restart: unless-stopped
+    mem_limit: 128m
 
   redis:
     image: redis:7.4.12
     restart: unless-stopped
+    mem_limit: 256m
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -61,6 +65,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
     restart: unless-stopped
+    mem_limit: 1g
     environment:
       POSTGRES_USER: outline
       POSTGRES_DB: outline
